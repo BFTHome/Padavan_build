@@ -1,0 +1,109 @@
+name: Padavan_build
+
+# Controls when the action will run. 
+on: 
+  push:
+  workflow_dispatch:
+
+env:
+  src_git: https://github.com/hanwckf/rt-n56u.git
+  build_dir: /opt/rt-n56u
+  images_dir: /opt/images
+  ENABLED_CFG: |
+    CONFIG_FIRMWARE_INCLUDE_TCPDUMP
+    CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT
+    CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM
+    CONFIG_FIRMWARE_INCLUDE_DOGCOM
+    CONFIG_FIRMWARE_INCLUDE_MINIEAP
+    CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT
+    CONFIG_FIRMWARE_INCLUDE_NAPT66
+    CONFIG_FIRMWARE_INCLUDE_VLMCSD
+    CONFIG_FIRMWARE_INCLUDE_TTYD
+    CONFIG_FIRMWARE_INCLUDE_HTOP
+    CONFIG_FIRMWARE_INCLUDE_NANO
+    CONFIG_FIRMWARE_INCLUDE_MENTOHUST
+  DISABLED_CFG: |
+    CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS
+    CONFIG_FIRMWARE_INCLUDE_SSSERVER
+    CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER
+    CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CLIENT
+    CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CMD
+    CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER
+    CONFIG_FIRMWARE_INCLUDE_FRPC
+    CONFIG_FIRMWARE_INCLUDE_FRPS
+    CONFIG_FIRMWARE_INCLUDE_TUNSAFE
+    CONFIG_FIRMWARE_INCLUDE_WIREGUARD
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-20.04
+    env:
+      build_variant: ${{ matrix.build_variant }}
+      targets: ${{ matrix.targets }}
+    strategy:
+      matrix:
+        include:
+          - build_variant: "mt7620"
+            targets: "PSG1208 PSG1218 NEWIFI-MINI MI-MINI MI-3 OYE-001"
+          - build_variant: "mt7628"
+            targets: "360P2 HC5861B HC5761A HC5661A MI-NANO"
+          - build_variant: "mt7621"
+            targets: "K2P DIR-878 RM2100 CR660x JCG-Q20"
+          - build_variant: "mt7621-usb-1"
+            targets: "MSG1500 WR1200JS E8820V2 NEWIFI3 MI-R3G B70"
+          - build_variant: "mt7621-usb-2"
+            targets: "JCG-836PRO JCG-AC860M JCG-Y2 DIR-882"
+    steps:
+      - uses: actions/checkout@v2
+      - name: Prepare environment
+        run: |
+          sudo apt update
+          sudo apt install libtool-bin gperf python-docutils autopoint gettext zip
+          mkdir -p $images_dir
+          cp -f ./ReleaseNote.txt $images_dir
+      - name: Clone source
+        run: |
+          git clone --depth=1 $src_git $build_dir
+          cd $build_dir
+          GIT_VERSION="$(git rev-parse --short=7 HEAD 2>/dev/null)"
+          build_date="$(date +%Y%m%d)"
+          echo "build_date=${build_date}" >> $GITHUB_ENV
+          echo "image_suffix=${GIT_VERSION}_${build_date}" >> $GITHUB_ENV
+          echo "image_name=images_${build_variant}_${GIT_VERSION}" >> $GITHUB_ENV
+      - name: Run shellcheck
+        run: |
+          cd $build_dir
+          if [ -f ./trunk/tools/shellcheck.sh ]; then sh ./trunk/tools/shellcheck.sh; fi
+      - name: Prepare toolchain
+        run: |
+          cd $build_dir/toolchain-mipsel
+          sh dl_toolchain.sh
+      - name: Modify configs
+        run: |
+          cd $build_dir/trunk/configs/templates
+          for m in $targets; do if [ -f $m.config ]; then \
+          for n in $ENABLED_CFG; do sed -i "/${n}/c${n}=y" $m.config; done; \
+          for n in $DISABLED_CFG; do sed -i "/${n}/c${n}=n" $m.config; done; \
+          fi; done
+      - name: Start build
+        run: |
+          cd $build_dir/trunk
+          for m in $targets; do fakeroot ./build_firmware_ci $m; \
+          if [ $? = 0 ]; then cp -f images/*.trx $images_dir/$m.trx; else exit 1; fi; \
+          ./clear_tree_simple >/dev/null 2>&1; done
+      - name: Create archive
+        if: ${{ success() }}
+        run: |
+          echo -e "Build Date: ${build_date}\n" >> ${images_dir}/ReleaseNote.txt
+          cd $build_dir && git log -1 |tee -a ${images_dir}/ReleaseNote.txt
+          cd $images_dir
+          for m in $targets; do zip ${m}_${image_suffix}.zip $m.trx ReleaseNote.txt; done
+          7z a -mx=9 ${image_name}.7z *.zip
+      - name: Upload images to Artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v2.2.1
+        with:
+          name: ${{ env.image_name }}
+          path: ${{ env.images_dir }}/${{ env.image_name }}.7z
