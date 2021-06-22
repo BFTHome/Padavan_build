@@ -1,9 +1,17 @@
 name: Padavan_build
 
 # Controls when the action will run. 
+
+
 on: 
-  push:
+  repository_dispatch:
   workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: true
+  ##push:
+  ##workflow_dispatch:
 
 env:
   src_git: https://github.com/hanwckf/rt-n56u.git
